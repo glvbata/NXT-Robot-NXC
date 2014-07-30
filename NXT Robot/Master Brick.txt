@@ -1,0 +1,674 @@
+/* Russel, Patrick, Tarl and Gian */
+
+// For Wander
+#define WANDER_LEFT 40 // thread base power for the left tire.
+#define WANDER_RIGHT 40 // wander thread base power for the right tire.
+
+// For bumper detection
+#define LEFT_TOUCH 1
+#define RIGHT_TOUCH 2
+#define BOTH 3
+
+// For object approaching
+#define MAX_POWER 100
+#define NEAR 40 //Object Detection in cm
+#define CLOSE 14 //Distance from Object before stopping
+
+// For escape
+#define MINUTE 6000        // one minute
+#define SECONDS 500 // three seconds
+#define BACKUP 300
+#define ESCAPE_THRESH 80
+
+//For grad follow
+#define __NOTETIME   10
+#define __WAITTIME   12
+
+#define LIGHT_MIN -25
+#define LIGHT_MAX 25
+
+/* Global Variables */
+
+// 0 - Wander
+// 1 - Gradient Follow
+// 2 - Patch Feed
+// 3 - Object Approach
+// 4 - Escape
+// 5 - Object Avoid
+enum ModeE {wanderE, gradFollowE, pFeedE, objAppE, escapeE, objAvoidE, deadE};
+enum EnergyE {dangerE, hungryE, fullE};
+
+int mode = 0; // Used to keep track of the current state of the robot.
+int energyLevelE = 2;
+
+/*
+ * When a thread attempts to take control of the motors it must first run
+ * switchMode to see if it can continue.
+ * Input: theMode the mode the thread would like to switch to.
+*/
+sub switchMode(ModeE theMode)
+{
+
+  if(theMode == wanderE)
+  {
+    mode = wanderE;
+  }
+  else if(theMode == deadE)
+  {
+    mode = deadE;
+  }
+  else
+  {
+    switch(energyLevelE)
+    {
+      case fullE:
+         if(theMode != gradFollowE && theMode != pFeedE)
+         {
+            if(theMode > mode){mode = theMode;}
+         }
+      break;
+    
+      case hungryE:
+         if(theMode > mode){mode = theMode;}
+      break;
+    
+      case dangerE:
+         if(theMode != objAppE && theMode != escapeE)
+         {
+            if(theMode > mode){mode = theMode;}
+         }
+      break;
+    }
+  }
+}
+
+sub calcEnergy(float energyLevel)
+{
+  if(energyLevel > 50.0){energyLevelE = fullE;}
+  else if(energyLevel <= 50.0 && energyLevel > 25.0) {energyLevelE = hungryE;}
+  else if(energyLevel <= 25.0 && energyLevel > 0.0) {energyLevelE = dangerE;}
+  
+  NumOut(20, 40, energyLevelE);
+}
+
+/*
+* energyTimer
+*/
+task energyTimer()
+{
+   float energyLevel = 100.0;
+   while(true)
+   {
+   NumOut(10, 40, mode);
+     Wait(5000);
+     if(mode == pFeedE)
+     {
+       energyLevel = energyLevel + 4.167;
+       if(energyLevel >= 100)
+       {
+         energyLevel = 100.0; //Incase we go above 100 when feeding.
+         switchMode(wanderE);
+       }
+     }
+     else
+     {
+       energyLevel = energyLevel - 2.084;
+       if(energyLevel <= 0)
+       {
+         switchMode(deadE);
+         Off(OUT_BC);
+         int freq = 800;
+         for(freq = 800; freq >= 220; freq--)
+         {
+           PlayTone(freq, 5);
+           Wait(5);
+         }
+         StopAllTasks();
+       }
+     }
+     NumOut(2, 10, energyLevel);
+     calcEnergy(energyLevel);
+   }
+}
+
+/*
+* wander method
+*/
+task wander(){
+
+  int wanderLeft = Random(30) + 35;
+  int wanderRight = Random(30) + 32;
+  int counter = Random(500) + 500;
+  
+  while(true){
+     if(mode == wanderE)
+     {
+       OnFwd(OUT_B, wanderLeft);
+       OnFwd(OUT_C, wanderRight);
+       if(counter <= 0)
+       {
+         wanderLeft = Random(30) + 35;
+         wanderRight = Random(30) + 32;
+         counter = Random(500) + 500;
+       }
+       counter = counter - 10;
+       Wait(10);
+     }
+     Wait(10);
+  }
+}
+
+/*
+* objAppClose()
+*/
+sub objAppClose()
+{
+  int counter = 0;
+  int powerB = 0;
+  int powerC = 0;
+  
+  while(mode == objAppE && counter < 2901)
+  {
+    if(counter < 2000)
+    {
+      powerB = 0;
+      powerC = 0;
+    }
+    else if(counter < 2100)
+    {
+      powerB = -80;
+      powerC = -80;
+    }
+    else if(counter < 2900)
+    {
+      powerB = -80;
+      powerC = 0;
+    }
+    else
+    {
+      switchMode(wanderE);
+    }
+    OnFwd(OUT_B, powerB);
+    OnFwd(OUT_C, powerC);
+    Wait(10);
+    counter = counter + 10;
+  }
+
+}
+
+/*
+* Object detection
+*/
+task objApp()
+{
+   int distance;
+   while(true)
+   {
+      distance = SensorUS(IN_3);
+      if(distance <= NEAR && distance >= CLOSE){switchMode(objAppE);}
+      while (mode == objAppE) //If object is within detecting distance
+      {
+      
+        if(distance > NEAR)
+        {
+          switchMode(wanderE);
+        }
+         //proportional approach
+         bool tmp_a = ((MAX_POWER/NEAR)*distance) + 9;
+         bool tmp_b = ((MAX_POWER/NEAR)*distance);
+
+
+         if(tmp_a > 100 || tmp_b > 100) {
+             OnFwd(OUT_B, 100);
+             OnFwd(OUT_C, 100);
+         } else {
+             OnFwd(OUT_B, tmp_a);
+             OnFwd(OUT_C, tmp_b);
+         }
+
+         distance = SensorUS(IN_3);
+
+         //If object is too close, stop
+         if (distance < CLOSE)
+         {
+           objAppClose();
+         }
+      }
+      Wait(10);
+   }
+}
+
+//objAvoid()
+// If an object is hit react accodringly.
+sub objAvoid(int the_bumpers)
+{
+    switch (the_bumpers)
+    {
+     case LEFT_TOUCH: // left touch sensor activated
+         // back up
+         OnRev(OUT_BC, 75);
+         Wait(650);
+         // turn right
+         Off(OUT_B);
+         OnFwd(OUT_C, 75);
+         Wait(700);
+         break;
+
+     case RIGHT_TOUCH: // right touch sensor activated.
+         // back up
+         OnRev(OUT_BC, 75);
+         Wait(650);
+         // turn left
+         OnFwd(OUT_B, 75);
+         Off(OUT_C);
+         Wait(700);
+         break;
+
+     case BOTH: // both left and right are activated.
+         #define __NOTETIME   10
+         #define __WAITTIME   12
+         OnFwd(OUT_BC, 0);
+
+          PlayTone(349,16*__NOTETIME);
+          Wait(16*__WAITTIME);
+          PlayTone(349,16*__NOTETIME);
+          Wait(16*__WAITTIME);
+          PlayTone(349,16*__NOTETIME);
+          Wait(16*__WAITTIME);
+          PlayTone(349,16*__NOTETIME);
+          Wait(16*__WAITTIME);
+          PlayTone(349,16*__NOTETIME);
+          Wait(16*__WAITTIME);
+
+         OnRev(OUT_BC, 75);
+         Wait(1000);
+         OnFwd(OUT_BC, 0);
+         Wait(2000);
+         // turn a random distance to the right
+         int touchLeft;
+         int touchRight;
+         if (Random(100) % 2) {
+            touchLeft = 40;
+            touchRight = -40;
+         } else {
+            touchLeft = -40;
+            touchRight = 40;
+         }
+         OnFwd(OUT_B, touchLeft);
+         OnFwd(OUT_C, touchRight);
+         Wait(10);
+         break;
+    }
+    mode = wanderE;
+}
+
+//Helper for escape
+sub printTimerState(long t0, long t_prime) {
+   // time
+   TextOut(2, 10, "t");
+   TextOut(2, 20, "l");
+   TextOut(10, 10, "                   ");
+   TextOut(10, 20, "                   ");
+   NumOut(10,10, t0);
+   NumOut(10,20, t_prime);
+}
+
+//escape
+sub escape(long scaredValue)
+{
+  //I'm escaping
+   bool escaping = true;
+   long t0 = 0;
+   long diff;
+
+   float percentScared = scaredValue / 1000;
+
+   int turnDirection = 0;
+   int timeCounter = 0;
+   int randomTurn; // get the turn value.
+   int totalWait;  // get the wait
+
+   int escapePowerR = 0;
+   int escapePowerL = 0;
+
+
+   timeCounter = 0;
+   randomTurn = 100 + BACKUP + Random(100);
+   totalWait = randomTurn + SECONDS * percentScared;
+   turnDirection = Random(2);
+
+   switchMode(escapeE);
+
+   while (mode == escapeE) {
+
+       /*diff = t0;
+       t0 = CurrentTick();
+
+       if (diff != t0) {
+         timeCounter++;
+       }*/
+       
+
+       //printTimerState(timeCounter, 0);
+       // if its scared run the thread.
+
+       // light flashed
+       // so we should:
+       // back up
+       // this is were we set the backup
+       if (timeCounter < BACKUP) {
+          escapePowerR = -80;
+          escapePowerL = -80;
+
+         // the randomTurn
+       } else if (timeCounter < randomTurn) {
+          // turn in a random direction
+          if (turnDirection) { // is a random 0 or 1
+            escapePowerL = 80;
+            escapePowerR = -80;
+          } else {
+            escapePowerL = -80;
+            escapePowerR = 80;
+          }
+
+        // run away here
+        } else if (timeCounter < totalWait) {
+          // run for 3 or less mins
+          escapePowerR = 100;
+          escapePowerL = 100;
+
+        // now we stop, we are safe.
+        } else {
+          escapePowerR = 0; // reset to zero
+          escapePowerL = 0; // reset to zero
+          escaping = false;   // not scared anymore
+          timeCounter = 0;
+          switchMode(wanderE);
+        }
+
+       // TextOut(10, 30, "Wheels");
+       // NumOut(10, 20, escapePowerL);
+       // NumOut(30, 20, escapePowerR);
+        // set wheel power
+        OnFwd(OUT_B,escapePowerL * percentScared);
+        OnFwd(OUT_C,escapePowerR * percentScared);
+        Wait(10);
+        timeCounter+=2;
+   }
+
+}
+
+// Enters from gradient follow. Stays within patch and raises hunger level.
+sub pFeed()
+{
+  int turnCounter = 0;
+  int timer = 0;
+  int turnTimer = 0;
+  bool turning = false;
+
+  while(mode == pFeedE)
+  {
+    if (turnCounter == 3) {
+     mode = gradFollowE;
+     PlayTone(400, 1600);
+    }
+
+    if((SENSOR_1 > 50) && !turning)
+    {
+      OnFwd(OUT_BC, 20);
+      Wait(100);
+      timer++;
+
+      if (timer >= 30)
+      {
+       timer = 0;
+       turnCounter = 0;
+      }
+
+    } else {
+      turning = true;
+      OnFwd(OUT_B, 50);
+      OnRev(OUT_C, 50);
+      Wait(10);
+      turnTimer++;
+      if (turnTimer == 100)
+      {
+       turnCounter++;
+       turnTimer = 0;
+       turning = false;
+      }
+    }
+  }
+}
+
+sub playTone(){
+
+  PlayToneEx(277,16*__NOTETIME, 4, false);
+  Wait(16*__WAITTIME);
+  PlayTone(277,16*__NOTETIME);
+  Wait(16*__WAITTIME);
+
+}
+
+int oneEightyCheck()
+{
+    int lightFront = (Sensor(IN_1) - 45) * 2;   // normalize
+    int lightBack = (Sensor(IN_2) - 45) * 2;    // normalize
+      
+    int whiteCount = 0;
+    int counter = 0;
+
+    OnFwd(OUT_B, 50);
+    OnFwd(OUT_C, -50);
+
+    while(mode == gradFollowE && counter < 150)
+    {
+      lightFront = (Sensor(IN_1) - 45) * 2;   // normalize
+      lightBack = (Sensor(IN_2) - 45) * 2;    // normalize
+      lightFront = lightFront > 20 ? 20 : lightFront;
+      lightBack = lightBack > 20 ? 20 : lightBack;
+
+      if(lightFront >= 0){whiteCount++;}
+      counter++;
+      Wait(10);
+    }
+    return whiteCount;
+}
+
+sub quickTurn(bool isRight)
+{
+  while((Sensor(IN_1) - 45) < 0 && mode == gradFollowE)
+  {
+    if(isRight)
+    {
+      OnFwd(OUT_B, 50);
+      OnFwd(OUT_C, -50);
+    }
+    else
+    {
+      OnFwd(OUT_B, -50);
+      OnFwd(OUT_C, 50);
+    }
+    Wait(10);
+  }
+}
+
+//Gradient Follow
+task gradFollow()
+{
+  int lightFront = 0;
+  int lightBack = 0;
+  int lightB;
+  int lightC;
+
+  int turnCount = 0;
+  int straightCount = 0;
+
+  int leftWhite;
+  int rightWhite;
+
+  bool adjusting = false;
+  bool direction = false;
+  bool firstRun = false;
+
+  while(true){
+  
+    lightFront = (Sensor(IN_1) - 45) * 2;   // normalize
+    lightBack = (Sensor(IN_2) - 45) * 2;    // normalize
+
+    lightFront = lightFront > 20 ? 20 : lightFront;
+    lightBack = lightBack > 20 ? 20 : lightBack;
+    
+    // detected a line to follow
+    if (lightBack >= 0 && mode == wanderE)
+    {
+       switchMode(gradFollowE);
+       firstRun = true;
+    }
+
+    if(firstRun && mode == gradFollowE)
+    {
+      turnCount = 0;
+      straightCount = 0;
+    
+      OnRev(OUT_BC, 50);
+      Wait(200);
+      rightWhite = oneEightyCheck();
+      leftWhite = oneEightyCheck();
+      if(rightWhite > leftWhite){quickTurn(true);}
+      else if (leftWhite > rightWhite){quickTurn(false);}
+      firstRun = false;
+    }
+    
+    // this is the gradient follow part
+    if (mode == gradFollowE)
+    {
+       lightFront = (Sensor(IN_1) - 45) * 2;   // normalize
+       lightBack = (Sensor(IN_2) - 45) * 2;    // normalize
+
+       lightFront = lightFront > 20 ? 20 : lightFront;
+       lightBack = lightBack > 20 ? 20 : lightBack;
+       if (adjusting)
+       {
+         if (lightBack > 0)
+         {
+            if (direction)
+            {
+              lightC = 30;
+              lightB = -30;
+            }
+            else
+            {
+              lightC = -30;
+              lightB = 30;
+            }
+            turnCount++;
+         }
+         else
+         {
+            adjusting = false;
+            TextOut(10, 30, "count:    ");
+            NumOut(40, 30, turnCount);
+            direction = turnCount > straightCount + 100 ? direction : !direction;
+            turnCount = 0;
+            straightCount = 0;
+         }
+       }
+       else
+       {
+         if (lightFront > 2)
+         {
+            lightC = 30;
+            lightB = 30;
+            straightCount++;
+         }
+         else
+         {
+            adjusting = true;
+         }
+
+         if (straightCount > 300)
+         {
+            playTone();
+            mode = pFeedE;
+            pFeed();
+            firstRun = true;
+            lightB = 0;
+            lightC = 0;
+         }
+       }
+       //Motor Power
+       OnFwd(OUT_B, lightB);
+       OnFwd(OUT_C, lightC);
+       Wait(10);
+    } //End inner logic
+  } //End outer while
+}
+
+//messenger()
+/*Recieves messages from SLAVE and attempts to run any sub routine associated
+  with them. */
+task messengerBumper()
+{
+  int the_bumper = 0;
+  while(true)
+  {
+    while(the_bumper == 0)
+    {
+      ReceiveRemoteNumber(MAILBOX2, true, the_bumper);
+      Wait(10);
+    }
+    TextOut(0,LCD_LINE1, "Bumper value");
+    NumOut(0,LCD_LINE2, the_bumper);
+    mode = objAvoidE;
+    objAvoid(the_bumper);
+    mode = wanderE;
+    the_bumper = 0;
+  }
+}
+
+task messengerLight()
+{
+  int the_light;
+  bool scared = false;
+  while(true)
+  {
+    while(!scared)
+    {
+       ReceiveRemoteBool(MAILBOX4, true, scared);
+       Wait(10);
+    }
+    //ReceiveRemoteNumber(MAILBOX1, true, the_light);
+    //ReceiveRemoteBool(MAILBOX4, true, scared);
+
+    //TextOut(0,LCD_LINE6, "Light value");
+    //NumOut(0, LCD_LINE7, the_light);
+
+    while(the_light == 0)
+    {
+       ReceiveRemoteNumber(MAILBOX1, true, the_light);
+    }
+    //NumOut(0, LCD_LINE7, the_light);
+    //TextOut(0, LCD_LINE8, "Scared");
+    escape(the_light);
+    scared = false;
+    the_light = 0;
+  }
+}
+
+// initSensors()
+// Initialize all sensors
+inline void initSensors()
+{
+    SetSensor(IN_1, SENSOR_LIGHT);
+    SetSensor(IN_2, SENSOR_LIGHT);
+    SetSensorLight(IN_1);
+    SetSensorLight(IN_2);
+    SetSensorUltrasonic(IN_3);
+}
+
+
+task main() {
+     initSensors();
+     Precedes(messengerBumper, messengerLight, wander, gradFollow, energyTimer, objApp);
+}

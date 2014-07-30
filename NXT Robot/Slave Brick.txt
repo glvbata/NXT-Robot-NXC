@@ -1,0 +1,156 @@
+//SLAVE
+#define INBOX 5
+
+//  #define MAILBOX1   0     // Mailbox for scaredValue
+// #define MAILBOX2   1     // Mailbox for touch sensor
+// #define MAILBOX3  2    // Mailbox for strings.
+// #define MAILBOX4 3   // this is the new mailbox for the scared flag.
+#define MINUTE 6000        // one minute
+#define THREE_SECONDS 3000 // three seconds
+#define BACKUP 300
+#define ESCAPE_THRESH 70
+
+int LightValue = 0;
+int lightSensorFlag = 0;  // Flag for light sensor
+int touchSensorFlag = 0; // Flag for touch sensor number 1
+
+
+sub printMsg(string msg) {
+   TextOut(10, 40, "                   ");
+   TextOut(10, 40, msg);
+}
+
+/* Prints the escape state of the robot */
+sub printEscapeState(int mean, int current, float percent) {
+
+   // mean and current light input
+   TextOut(2, 10, "m");
+   TextOut(30, 10, "c");
+   TextOut(10, 10, "                   ");
+   TextOut(37, 10, "                   ");
+   NumOut(10,10, mean);
+   NumOut(37,10, current);
+
+   // scared percent
+   TextOut(2, 20, "p");
+   TextOut(10, 20, "                   ");
+   NumOut(10,20, percent);
+}
+
+/* Prints the timer state */
+sub printTimerState(long t0, long t_prime) {
+   // time
+   TextOut(2, 10, "scaredCounter");
+   TextOut(2, 20, "revertCounter");
+   TextOut(10, 10, "                   ");
+   TextOut(10, 20, "                   ");
+   NumOut(10,10, t0);
+   NumOut(10,20, t_prime);
+}
+
+/* Gets the light feed back */
+task lightFeedback() {
+   SetSensor(IN_3, SENSOR_LIGHT);
+   SetSensorLight(IN_3);
+
+   int inputs[3] = { 0, 0, 0};
+   int inputMean; // the input average
+   int currentInput;
+
+   long scaredCounter= MINUTE;
+   long revertCounter = MINUTE;
+   long percentScared = 1000;
+   
+
+   int i;
+   for (i = 0; i < 3; i++) {
+     inputs[i] = Sensor(IN_3);
+   }
+
+   while(true) {
+     inputMean = (inputs[0] + inputs[1] + inputs[2]) / 3; // compute the ambient light
+     currentInput = Sensor(IN_3);  // get the current light reading
+
+     //t_prime = t0; // record the last time.
+     //t0 = CurrentTick(); // get the current time for future use.
+
+     printTimerState(scaredCounter, revertCounter);
+     // printEscapeState(inputMean, currentInput, percentScared);
+
+     //if (t0 != t_prime) { // if clock tick has changed.
+       if (revertCounter >= MINUTE) {
+         revertCounter = 0;
+         percentScared =  (percentScared < 750) ? percentScared + 250 : 1000;
+       }
+     
+     
+       revertCounter++;  // add to the counters
+       scaredCounter++;
+
+       // if the input is greater than the ambien light by at least the
+       // threshold a flash of light happened.
+       if (percentScared > 0 && currentInput > ESCAPE_THRESH  ) {
+
+         // if already scared then
+         if (scaredCounter < MINUTE) { percentScared = percentScared - 250; }
+
+         revertCounter = 0; // reset revertCount
+         scaredCounter = 0; // reset the scared count
+         currentInput = inputMean; // throw away "flash" reading
+
+         TextOut(0, 30, "               ");
+         NumOut(30, 30, percentScared);
+
+         SendResponseNumber(MAILBOX1, percentScared);
+         SendResponseBool(MAILBOX4, true);
+
+
+         until (SENSOR_3 < ESCAPE_THRESH);
+       }
+
+       // printMsg("escape update");
+       // update state
+       for (i = 0; i < 2; i++) {
+         inputs[i] = inputs[i + 1];
+       }
+       inputs[2] = currentInput;
+     //}
+     Wait(10);
+   }
+}
+
+/* Gets the touch feed back */
+task touchFeedback() {
+     SetSensorTouch(IN_1); // Left Sensor
+     SetSensorTouch(IN_4); // Right Sensor
+
+     while (true) {
+           touchSensorFlag = SENSOR_1  + (SENSOR_4 * 2);
+          // TextOut(0, LCD_LINE6,"LSen:");
+          // TextOut(50, LCD_LINE6,"RSen:");
+           //NumOut(35, LCD_LINE6, SENSOR_1);
+          // NumOut(85, LCD_LINE6, SENSOR_4)
+           
+          if (touchSensorFlag != 0) {
+                SendResponseNumber(MAILBOX2, touchSensorFlag);
+                Wait(1000);
+          }
+          Wait(10);
+     }
+}
+
+//Checks if brick is connected to master brick
+sub BTCheck(int conn){
+    if (!BluetoothStatus(conn)==NO_ERR){
+      TextOut(7,LCD_LINE2,"      ");
+      TextOut(7,LCD_LINE2,"Error");
+      Wait(1000);
+      Stop(true);
+    }
+}
+
+task main(){
+    BTCheck(0);
+    Precedes(touchFeedback, lightFeedback);
+}
+
